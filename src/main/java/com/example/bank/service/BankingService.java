@@ -4,7 +4,6 @@ import com.example.bank.dto.*;
 import com.example.bank.entity.*;
 import com.example.bank.exception.*;
 import com.example.bank.repository.*;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,7 +20,11 @@ public class BankingService {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
     }
-
+    /*
+     * CREATE ACCOUNT
+     *
+     * @Transactional: Runs the database operation within a transaction.
+     */
     @Transactional
     public AccountResponse createAccount(CreateAccountRequest request) {
         String id = request.accountId().trim();
@@ -32,11 +35,19 @@ public class BankingService {
         return AccountResponse.from(account);
     }
 
+    /*
+     * GET ACCOUNT DETAILS
+     *
+     * readOnly = true indicates that this method only reads data.
+     */
     @Transactional(readOnly = true)
     public AccountResponse getAccount(String accountId) {
         return AccountResponse.from(findAccount(accountId));
     }
 
+    /*
+     * DEPOSIT MONEY
+     */
     @Transactional
     public AccountResponse deposit(String accountId, BigDecimal amount) {
         validatePositiveAmount(amount);
@@ -44,10 +55,13 @@ public class BankingService {
             .orElseThrow(() -> new AccountNotFoundException(accountId));
         account.setBalance(account.getBalance().add(money(amount)));
         accountRepository.save(account);
-        record(UUID.randomUUID().toString(), account, TransactionType.DEPOSIT, money(amount));
+        bankRecord(UUID.randomUUID().toString(), account, TransactionType.DEPOSIT, money(amount));
         return AccountResponse.from(account);
     }
 
+    /*
+     * WITHDRAW MONEY
+     */
     @Transactional
     public AccountResponse withdraw(String accountId, BigDecimal amount) {
         validatePositiveAmount(amount);
@@ -56,10 +70,15 @@ public class BankingService {
         ensureFunds(account, amount);
         account.setBalance(account.getBalance().subtract(money(amount)));
         accountRepository.save(account);
-        record(UUID.randomUUID().toString(), account, TransactionType.WITHDRAWAL, money(amount));
+        bankRecord(UUID.randomUUID().toString(), account, TransactionType.WITHDRAWAL, money(amount));
         return AccountResponse.from(account);
     }
 
+    /*
+     * TRANSFER MONEY BETWEEN TWO ACCOUNTS
+     *
+     * Both account updates and ledger entries must succeed together.
+     */
     @Transactional
     public Map<String, Object> transfer(TransferRequest request) {
         validatePositiveAmount(request.amount());
@@ -83,26 +102,40 @@ public class BankingService {
         accountRepository.save(destination);
 
         String reference = UUID.randomUUID().toString();
-        record(reference, source, TransactionType.TRANSFER_OUT, amount);
-        record(reference, destination, TransactionType.TRANSFER_IN, amount);
+        bankRecord(reference, source, TransactionType.TRANSFER_OUT, amount);
+        bankRecord(reference, destination, TransactionType.TRANSFER_IN, amount);
 
         return Map.of("referenceId", reference,
             "fromAccount", AccountResponse.from(source),
             "toAccount", AccountResponse.from(destination));
     }
 
+    /*
+     * GET TRANSACTION HISTORY
+     *
+     * Returns the account's transactions, newest first.
+     */
     @Transactional(readOnly = true)
     public List<TransactionResponse> getTransactions(String accountId) {
         findAccount(accountId); // Return 404 for unknown account IDs.
         return transactionRepository.findByAccountNumberOrderByCreatedAtDesc(accountId)
             .stream().map(TransactionResponse::from).toList();
     }
-
+    /*
+     * COMMON ACCOUNT LOOKUP
+     *
+     * Reuses account lookup logic across multiple service methods.
+     */
     private Account findAccount(String accountId) {
         return accountRepository.findByAccountNumber(accountId)
             .orElseThrow(() -> new AccountNotFoundException(accountId));
     }
 
+
+
+    /*
+     * VALIDATE MONEY AMOUNTS
+     */
     private void validatePositiveAmount(BigDecimal amount) {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0)
             throw new BadRequestException("Amount must be greater than zero");
@@ -113,12 +146,17 @@ public class BankingService {
     private void ensureFunds(Account account, BigDecimal amount) {
         if (account.getBalance().compareTo(amount) < 0) throw new InsufficientFundsException();
     }
-
+    /*
+     * STANDARDIZE MONEY VALUES
+     */
     private BigDecimal money(BigDecimal amount) {
         return amount.setScale(2, java.math.RoundingMode.UNNECESSARY);
     }
 
-    private void record(String reference, Account account, TransactionType type, BigDecimal amount) {
+    /*
+     * SAVE A TRANSACTION LEDGER ENTRY
+     */
+    private void bankRecord(String reference, Account account, TransactionType type, BigDecimal amount) {
         transactionRepository.save(new BankTransaction(reference, account.getAccountNumber(),
             type, amount, account.getBalance()));
     }
